@@ -3,6 +3,7 @@ import numpy as np
 from eye_tracker import EyeTracker
 from call_detector import CallRecordingDetector
 from alert_system import AlertSystem
+from camera_source import CameraDevice, CameraSourceManager
 
 
 class TestEyeTracker(unittest.TestCase):
@@ -114,6 +115,39 @@ class TestCallDetector(unittest.TestCase):
         self.assertIsInstance(status['recording'], bool)
         self.assertIsInstance(status['any_action'], bool)
 
+
+
+class TestCameraSourceManager(unittest.TestCase):
+    """Camera source selection tests."""
+
+    def setUp(self):
+        self.manager = CameraSourceManager()
+        self.devices = [
+            CameraDevice(0, 0, "Auto", "NVIDIA Broadcast Camera", 1280, 720, 30.0),
+            CameraDevice(1, 0, "Auto", "Integrated Webcam", 1280, 720, 30.0),
+            CameraDevice(2, 0, "Auto", "OBS Virtual Camera", 1280, 720, 30.0),
+        ]
+
+    def test_explicit_camera_id_wins(self):
+        selected = self.manager._select_device(self.devices, 2, None, ["nvidia"])
+        self.assertEqual(selected.index, 2)
+
+    def test_preferred_name_wins_without_explicit_id(self):
+        selected = self.manager._select_device(self.devices, None, "Integrated", ["nvidia"])
+        self.assertEqual(selected.index, 1)
+
+    def test_excluded_name_is_skipped(self):
+        selected = self.manager._select_device(self.devices, None, None, ["nvidia"])
+        self.assertEqual(selected.index, 1)
+
+    def test_falls_back_when_all_sources_are_excluded(self):
+        selected = self.manager._select_device(
+            self.devices,
+            None,
+            None,
+            ["nvidia", "integrated", "obs"],
+        )
+        self.assertEqual(selected.index, 0)
 
 class TestAlertSystem(unittest.TestCase):
     """Verification Round 7-8: Alert System Tests"""
@@ -278,3 +312,5 @@ class TestIntegration(unittest.TestCase):
 if __name__ == '__main__':
     # Run tests with verbose output
     unittest.main(verbosity=2)
+
+
