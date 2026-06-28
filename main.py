@@ -60,14 +60,23 @@ class EyeFocusMonitor:
         """Main application loop"""
         logger.info("Starting Eye Focus Monitor - Press 'Q' to quit")
         
+        retry_count = 0
+        max_retries = 3
+        
         try:
             while True:
                 ret, frame = self.cap.read()
                 
                 if not ret:
-                    logger.error("Failed to read frame from camera")
-                    break
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.warning(f"Failed to read frame, retrying... ({retry_count}/{max_retries})")
+                        continue  # Retry instead of immediately exiting
+                    else:
+                        logger.error("Failed to read frame from camera after retries")
+                        break
                 
+                retry_count = 0  # Reset retry counter on successful read
                 self.frame_count += 1
                 
                 # Get eye tracking data
@@ -124,20 +133,22 @@ class EyeFocusMonitor:
         overlay = frame.copy()
         
         # Draw call/recording status (top-left)
-        status_text = call_status['status_text']
-        status_color = (0, 0, 255) if call_status['any_action'] else (0, 255, 0)
+        status_text = call_status.get('status_text', 'Unknown')
+        status_color = (0, 0, 255) if call_status.get('any_action') else (0, 255, 0)
         cv2.putText(overlay, f"Status: {status_text}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
         
         # Draw eye tracking status (top-right)
-        eye_status = "👀 LOOKING AT SCREEN" if tracking_data['looking_at_screen'] else f"👀 LOOKING {tracking_data['gaze_direction'].upper()}"
-        eye_color = (0, 255, 0) if tracking_data['looking_at_screen'] else (0, 0, 255)
-        cv2.putText(overlay, eye_status, (w - 350, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, eye_color, 2)
+        if tracking_data.get('face_detected'):
+            gaze_dir = tracking_data.get('gaze_direction', 'center').upper()
+            eye_status = "👀 LOOKING AT SCREEN" if tracking_data.get('looking_at_screen') else f"👀 LOOKING {gaze_dir}"
+            eye_color = (0, 255, 0) if tracking_data.get('looking_at_screen') else (0, 0, 255)
+            cv2.putText(overlay, eye_status, (w - 350, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, eye_color, 2)
         
         # Draw face detection status
-        face_status = "✓ Face detected" if tracking_data['face_detected'] else "✗ NO FACE"
-        face_color = (0, 255, 0) if tracking_data['face_detected'] else (0, 0, 255)
+        face_status = "✓ Face detected" if tracking_data.get('face_detected') else "✗ NO FACE"
+        face_color = (0, 255, 0) if tracking_data.get('face_detected') else (0, 0, 255)
         cv2.putText(overlay, face_status, (10, 70),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, face_color, 2)
         
@@ -148,18 +159,20 @@ class EyeFocusMonitor:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         
         # Draw alert message if active
-        if alert_data['should_alert']:
-            alert_color = (0, 255, 255) if alert_data['severity'] == 'medium' else (0, 0, 255)
+        if alert_data.get('should_alert'):
+            alert_severity = alert_data.get('severity', 'low')
+            alert_color = (0, 255, 255) if alert_severity == 'medium' else (0, 0, 255)
+            alert_message = alert_data.get('message', 'Alert!')
             
             # Draw alert box
             alert_y = h // 2
-            text_size = cv2.getTextSize(alert_data['message'], cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+            text_size = cv2.getTextSize(alert_message, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
             box_coords = (w // 2 - text_size[0] // 2 - 10, alert_y - text_size[1] - 20,
                          w // 2 + text_size[0] // 2 + 10, alert_y + 20)
             
             cv2.rectangle(overlay, (box_coords[0], box_coords[1]), 
                          (box_coords[2], box_coords[3]), alert_color, -1)
-            cv2.putText(overlay, alert_data['message'], (w // 2 - text_size[0] // 2, alert_y),
+            cv2.putText(overlay, alert_message, (w // 2 - text_size[0] // 2, alert_y),
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
         
         # Draw eye tracking overlay
@@ -183,6 +196,13 @@ class EyeFocusMonitor:
         
         # Print statistics
         self._print_session_stats()
+        
+        # Close eye tracker resources
+        try:
+            if hasattr(self, 'eye_tracker'):
+                self.eye_tracker.close()
+        except Exception as e:
+            logger.error(f"Error closing eye tracker: {e}")
         
         # Release camera
         self.cap.release()

@@ -37,7 +37,26 @@ class EyeTracker:
         
         self.frame_count = 0
         self.eyes_off_screen_count = 0
-        
+    
+    def __del__(self):
+        """Cleanup MediaPipe resources on deletion"""
+        try:
+            if hasattr(self, '"'"'face_mesh'"'"') and self.face_mesh:
+                self.face_mesh.close()
+                logger.debug("MediaPipe FaceMesh closed")
+        except Exception as e:
+            logger.warning(f"Error closing FaceMesh: {e}")
+    
+    def close(self):
+        """Explicitly close MediaPipe resources"""
+        try:
+            if self.face_mesh:
+                self.face_mesh.close()
+                self.face_mesh = None
+                logger.info("Eye tracker resources released")
+        except Exception as e:
+            logger.error(f"Error releasing resources: {e}")
+    
     def process_frame(self, frame: np.ndarray) -> Dict:
         """
         Process a frame to detect eyes and estimate gaze direction
@@ -50,7 +69,7 @@ class EyeTracker:
                 - looking_at_screen: bool
                 - left_eye_open: bool
                 - right_eye_open: bool
-                - gaze_direction: str ('center', 'left', 'right', 'up', 'down')
+                - gaze_direction: str ('"'"'center'"'"', '"'"'left'"'"', '"'"'right'"'"', '"'"'up'"'"', '"'"'down'"'"')
                 - landmarks: face landmarks or None
                 - confidence: float (0-1)
         """
@@ -61,34 +80,34 @@ class EyeTracker:
         frame_rgb.flags.writeable = True
         
         result = {
-            'looking_at_screen': True,
-            'left_eye_open': False,
-            'right_eye_open': False,
-            'gaze_direction': 'center',
-            'landmarks': None,
-            'confidence': 0.0,
-            'face_detected': False
+            '"'"'looking_at_screen'"'"': True,
+            '"'"'left_eye_open'"'"': False,
+            '"'"'right_eye_open'"'"': False,
+            '"'"'gaze_direction'"'"': '"'"'center'"'"',
+            '"'"'landmarks'"'"': None,
+            '"'"'confidence'"'"': 0.0,
+            '"'"'face_detected'"'"': False
         }
         
         if not results.multi_face_landmarks:
             self.eyes_off_screen_count += 1
             if self.eyes_off_screen_count > 5:
-                result['looking_at_screen'] = False
+                result['"'"'looking_at_screen'"'"'] = False
             return result
         
         # Reset counter when face is detected
         self.eyes_off_screen_count = 0
         landmarks = results.multi_face_landmarks[0]
-        result['landmarks'] = landmarks
-        result['face_detected'] = True
+        result['"'"'landmarks'"'"'] = landmarks
+        result['"'"'face_detected'"'"'] = True
         
         # Extract eye aspect ratio and gaze direction
         h, w = frame.shape[:2]
         left_eye_aspect = self._calculate_eye_aspect_ratio(landmarks.landmark, self.LEFT_EYE)
         right_eye_aspect = self._calculate_eye_aspect_ratio(landmarks.landmark, self.RIGHT_EYE)
         
-        result['left_eye_open'] = left_eye_aspect > 0.1
-        result['right_eye_open'] = right_eye_aspect > 0.1
+        result['"'"'left_eye_open'"'"'] = left_eye_aspect > 0.1
+        result['"'"'right_eye_open'"'"'] = right_eye_aspect > 0.1
         
         # Estimate gaze direction
         gaze_direction, looking_at_screen, confidence = self._estimate_gaze_direction(
@@ -96,9 +115,9 @@ class EyeTracker:
             frame.shape
         )
         
-        result['gaze_direction'] = gaze_direction
-        result['looking_at_screen'] = looking_at_screen
-        result['confidence'] = confidence
+        result['"'"'gaze_direction'"'"'] = gaze_direction
+        result['"'"'looking_at_screen'"'"'] = looking_at_screen
+        result['"'"'confidence'"'"'] = confidence
         
         return result
     
@@ -153,20 +172,20 @@ class EyeTracker:
         avg_v_ratio = (right_v_ratio + left_v_ratio) / 2
         
         # Determine gaze direction
-        gaze_direction = 'center'
+        gaze_direction = '"'"'center'"'"'
         looking_at_screen = True
         
         if avg_h_ratio < (0.5 - self.gaze_threshold):
-            gaze_direction = 'left'
+            gaze_direction = '"'"'left'"'"'
             looking_at_screen = False
         elif avg_h_ratio > (0.5 + self.gaze_threshold):
-            gaze_direction = 'right'
+            gaze_direction = '"'"'right'"'"'
             looking_at_screen = False
         elif avg_v_ratio < (0.5 - self.gaze_threshold):
-            gaze_direction = 'up'
+            gaze_direction = '"'"'up'"'"'
             looking_at_screen = False
         elif avg_v_ratio > (0.5 + self.gaze_threshold):
-            gaze_direction = 'down'
+            gaze_direction = '"'"'down'"'"'
             looking_at_screen = False
         
         # Confidence is based on how extreme the gaze is
@@ -178,8 +197,8 @@ class EyeTracker:
         """Draw eye tracking visualization on frame"""
         h, w = frame.shape[:2]
         
-        if tracking_data.get('landmarks'):
-            landmarks = tracking_data['landmarks'].landmark
+        if tracking_data.get('"'"'landmarks'"'"'):
+            landmarks = tracking_data['"'"'landmarks'"'"'].landmark
             
             # Draw eye circles
             for eye_indices in [self.LEFT_EYE, self.RIGHT_EYE]:
@@ -187,11 +206,11 @@ class EyeTracker:
                 cv2.polylines(frame, [points], True, (0, 255, 0), 2)
         
         # Draw status text
-        status_text = "Looking at screen" if tracking_data['looking_at_screen'] else f"Looking {tracking_data['gaze_direction']}"
-        color = (0, 255, 0) if tracking_data['looking_at_screen'] else (0, 0, 255)
-        cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        
-        if not tracking_data.get('face_detected'):
-            cv2.putText(frame, "No face detected", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        if tracking_data.get('"'"'face_detected'"'"'):
+            status_text = "Looking at screen" if tracking_data['"'"'looking_at_screen'"'"'] else f"Looking {tracking_data['"'"'gaze_direction'"'"']}"
+            color = (0, 255, 0) if tracking_data['"'"'looking_at_screen'"'"'] else (0, 0, 255)
+            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        else:
+            cv2.putText(frame, "No face detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         
         return frame

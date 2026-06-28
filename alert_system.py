@@ -1,7 +1,7 @@
 import os
 import wave
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List
 import numpy as np
 
@@ -26,7 +26,7 @@ class AlertSystem:
         self.alert_history: List[Dict] = []
         self.consecutive_drift_frames = 0
         self.alert_threshold = 3  # Number of consecutive drift frames before alerting
-        self.alert_cooldown = 0  # Frames until next alert can trigger
+        self.alert_cooldown_until = datetime.now()  # Time-based cooldown
     
     def check_and_trigger_alert(self, 
                                in_call_or_recording: bool,
@@ -62,16 +62,18 @@ class AlertSystem:
         # No alert if not in call/recording
         if not in_call_or_recording:
             self.consecutive_drift_frames = 0
-            self.alert_cooldown = max(0, self.alert_cooldown - 1)
             return result
         
         # No face detected - high priority alert
         if not face_detected:
-            result['should_alert'] = True
-            result['alert_type'] = 'both'
-            result['message'] = "⚠️ FACE NOT DETECTED - Camera may be blocked!"
-            result['severity'] = 'high'
-            self._log_alert(result, call_app or recording_app)
+            # Check cooldown before alerting
+            if datetime.now() >= self.alert_cooldown_until:
+                result['should_alert'] = True
+                result['alert_type'] = 'both'
+                result['message'] = "⚠️ FACE NOT DETECTED - Camera may be blocked!"
+                result['severity'] = 'high'
+                self.alert_cooldown_until = datetime.now() + timedelta(seconds=1)
+                self._log_alert(result, call_app or recording_app)
             return result
         
         # Check for eyes looking away
@@ -79,11 +81,10 @@ class AlertSystem:
             self.consecutive_drift_frames += 1
         else:
             self.consecutive_drift_frames = 0
-            self.alert_cooldown = max(0, self.alert_cooldown - 1)
             return result
         
         # Trigger alert based on consecutive drift frames
-        if self.alert_cooldown <= 0 and self.consecutive_drift_frames >= self.alert_threshold:
+        if datetime.now() >= self.alert_cooldown_until and self.consecutive_drift_frames >= self.alert_threshold:
             result['should_alert'] = True
             result['alert_type'] = self._determine_alert_type(self.consecutive_drift_frames)
             result['message'] = self._generate_alert_message(self.consecutive_drift_frames)
@@ -97,7 +98,7 @@ class AlertSystem:
             })
             
             self._log_alert(result, call_app or recording_app)
-            self.alert_cooldown = 30  # 1 second cooldown at 30fps
+            self.alert_cooldown_until = datetime.now() + timedelta(seconds=1)  # 1 second cooldown
         
         return result
     

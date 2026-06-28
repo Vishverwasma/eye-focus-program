@@ -14,10 +14,10 @@ class CallRecordingDetector:
     # Known call/conferencing application process names
     CALL_APPS = {
         'zoom': ['zoom.exe', 'zoomus.exe'],
-        'teams': ['teams.exe', 'msedge.exe', 'chrome.exe'],  # Teams can run in browser
+        'teams': ['teams.exe', 'msedge.exe'],  # Removed chrome.exe - too broad
         'discord': ['discord.exe'],
         'skype': ['skype.exe'],
-        'google_meet': ['chrome.exe', 'chromium.exe'],  # Google Meet in browser
+        'google_meet': ['google-chrome.exe', 'chrome.exe'],  # Kept but use window validation
         'slack': ['slack.exe'],
         'whatsapp': ['whatsapp.exe'],
         'telegram': ['telegram.exe']
@@ -57,7 +57,7 @@ class CallRecordingDetector:
                 self.in_call_frames += 1
                 if self.in_call_frames > 2:  # Debounce with 2 frames
                     return True, app_name
-                return True, app_name
+                return False, ""  # Don't report until debounced
         
         self.in_call_frames = 0
         return False, ""
@@ -74,7 +74,7 @@ class CallRecordingDetector:
                 self.recording_frames += 1
                 if self.recording_frames > 2:  # Debounce with 2 frames
                     return True, app_name
-                return True, app_name
+                return False, ""  # Don't report until debounced
         
         # Also check if call app is running (likely has camera recording active)
         for app_name, processes in self.CALL_APPS.items():
@@ -82,7 +82,9 @@ class CallRecordingDetector:
                 # Double check for window title containing "recording" or similar
                 if self._check_window_title_for_recording():
                     self.recording_frames += 1
-                    return True, f"{app_name}_recording"
+                    if self.recording_frames > 2:
+                        return True, f"{app_name}_recording"
+                    return False, ""
         
         self.recording_frames = 0
         return False, ""
