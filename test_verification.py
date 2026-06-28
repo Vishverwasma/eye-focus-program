@@ -20,13 +20,15 @@ class TestEyeTracker(unittest.TestCase):
     
     def test_eye_aspect_ratio_calculation(self):
         """VR2: Test eye aspect ratio calculation"""
-        # Mock landmarks
-        landmarks = [None] * 468
-        
-        # Create mock eye points in a list
-        eye_indices = list(range(0, 16))  # Use first 16 indices as eye points
-        
-        # Test with valid eye shape
+        class MockLandmark:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+
+        # Real input is always MediaPipe landmark objects with .x/.y, never None.
+        landmarks = [MockLandmark(0.1 * i, 0.1 * i) for i in range(16)]
+        eye_indices = list(range(0, 16))
+
         result = self.tracker._calculate_eye_aspect_ratio(landmarks, eye_indices)
         self.assertIsInstance(result, float)
         self.assertGreaterEqual(result, 0)
@@ -149,6 +151,27 @@ class TestCameraSourceManager(unittest.TestCase):
         )
         self.assertEqual(selected.index, 0)
 
+class TestVirtualCameraBackend(unittest.TestCase):
+    """Middleware: virtual-camera backend probe + resilient recovery."""
+
+    def test_probe_returns_bool_and_message(self):
+        from virtual_camera import VirtualCameraPublisher
+
+        ok, detail = VirtualCameraPublisher.probe()
+        self.assertIsInstance(ok, bool)
+        self.assertIsInstance(detail, str)
+        self.assertGreater(len(detail), 0)
+
+    def test_reopen_same_returns_none_for_missing_device(self):
+        # Index 999 cannot be opened, so recovery must fail gracefully (None)
+        # rather than raise - the run loop relies on this.
+        manager = CameraSourceManager()
+        phantom = CameraDevice(999, manager.backends[0],
+                               manager.backend_name(manager.backends[0]),
+                               "phantom", 0, 0, 0.0)
+        self.assertIsNone(manager.reopen_same(phantom))
+
+
 class TestAlertSystem(unittest.TestCase):
     """Verification Round 7-8: Alert System Tests"""
     
@@ -175,7 +198,9 @@ class TestAlertSystem(unittest.TestCase):
     
     def test_alert_triggered_when_eyes_drift_in_call(self):
         """VR8: Test alert triggers when eyes drift during call"""
-        # Simulate multiple frames of eyes looking away
+        # The 1-second cooldown means only the FIRST threshold crossing alerts
+        # within a fast loop, so assert that *an* alert fired, not the last one.
+        fired = None
         for _ in range(self.alert_system.alert_threshold + 5):
             result = self.alert_system.check_and_trigger_alert(
                 in_call_or_recording=True,
@@ -183,11 +208,12 @@ class TestAlertSystem(unittest.TestCase):
                 face_detected=True,
                 call_app="zoom"
             )
-        
-        # After threshold, alert should trigger
-        self.assertTrue(result['should_alert'])
-        self.assertNotEqual(result['alert_type'], 'none')
-        self.assertGreater(len(result['message']), 0)
+            if result['should_alert']:
+                fired = result
+
+        self.assertIsNotNone(fired, "expected at least one alert to fire")
+        self.assertNotEqual(fired['alert_type'], 'none')
+        self.assertGreater(len(fired['message']), 0)
     
     def test_alert_severity_escalation(self):
         """VR8: Test alert severity increases over time"""
