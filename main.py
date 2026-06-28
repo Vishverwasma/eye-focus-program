@@ -1,8 +1,11 @@
 import cv2
+import argparse
 import logging
 import sys
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
+from camera_source import CameraSourceManager
 from eye_tracker import EyeTracker
 from call_detector import CallRecordingDetector
 from alert_system import AlertSystem
@@ -24,25 +27,35 @@ class EyeFocusMonitor:
     Main application class that coordinates eye tracking, call detection, and alerts.
     """
     
-    def __init__(self, camera_id: int = 0):
+    def __init__(
+        self,
+        camera_id: Optional[int] = None,
+        prefer_camera_name: Optional[str] = None,
+        exclude_camera_names: Optional[list] = None,
+        camera_scan_limit: int = 10,
+    ):
         """
         Initialize the Eye Focus Monitor
         
         Args:
-            camera_id: Camera device ID (0 for default camera)
+            camera_id: Explicit camera device ID. If omitted, the app scans for
+                a usable physical, virtual, or shared camera source.
+            prefer_camera_name: Optional text to prefer in the discovered source.
+            exclude_camera_names: Optional source-name fragments to avoid.
+            camera_scan_limit: Highest camera index to scan.
         """
         logger.info("Initializing Eye Focus Monitor...")
         
         self.camera_id = camera_id
-        self.cap = cv2.VideoCapture(camera_id)
-        
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Failed to open camera {camera_id}")
-        
-        # Set camera properties
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.prefer_camera_name = prefer_camera_name
+        self.exclude_camera_names = exclude_camera_names or []
+        self.camera_manager = CameraSourceManager(max_index=camera_scan_limit)
+        self.cap, self.camera_device = self.camera_manager.open_preferred(
+            camera_id=camera_id,
+            prefer_name=prefer_camera_name,
+            exclude_names=self.exclude_camera_names,
+        )
+        self.camera_id = self.camera_device.index
         
         # Initialize components
         self.eye_tracker = EyeTracker(gaze_threshold=0.15)
@@ -72,9 +85,22 @@ class EyeFocusMonitor:
                     if retry_count < max_retries:
                         logger.warning(f"Failed to read frame, retrying... ({retry_count}/{max_retries})")
                         continue  # Retry instead of immediately exiting
-                    else:
-                        logger.error("Failed to read frame from camera after retries")
+                    logger.warning("Camera read failed after retries; scanning for another source")
+                    replacement_cap, replacement_device = self.camera_manager.reopen_after_failure(
+                        current_index=self.camera_id,
+                        prefer_name=self.prefer_camera_name,
+                        exclude_names=self.exclude_camera_names,
+                    )
+                    if replacement_cap is None:
+                        logger.error("No replacement camera source is available")
                         break
+
+                    self.cap.release()
+                    self.cap = replacement_cap
+                    self.camera_device = replacement_device
+                    self.camera_id = replacement_device.index
+                    retry_count = 0
+                    continue
                 
                 retry_count = 0  # Reset retry counter on successful read
                 self.frame_count += 1
@@ -226,9 +252,67 @@ class EyeFocusMonitor:
         logger.info("=" * 50)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Monitor gaze during calls and recordings.")
+    parser.add_argument(
+        "--camera",
+        type=int,
+        default=None,
+        help="Use a specific camera index. Omit to auto-select a working source.",
+    )
+    parser.add_argument(
+        "--prefer-name",
+        default=None,
+        help="Prefer a camera source containing this text, for example 'Logitech' or 'NVIDIA'.",
+    )
+    parser.add_argument(
+        "--exclude-name",
+        action="append",
+        default=[],
+        help="Avoid camera sources containing this text. Can be used multiple times.",
+    )
+    parser.add_argument(
+        "--scan-limit",
+        type=int,
+        default=10,
+        help="Highest camera index to scan when auto-selecting.",
+    )
+    parser.add_argument(
+        "--list-cameras",
+        action="store_true",
+        help="List usable OpenCV camera sources and exit.",
+    )
+    return parser.parse_args()
+
+
+def list_cameras(scan_limit: int):
+    manager = CameraSourceManager(max_index=scan_limit)
+    devices = manager.scan()
+    if not devices:
+        print("No usable camera sources were found.")
+        return
+
+    print("Usable camera sources:")
+    for device in devices:
+        print(
+            f"  [{device.index}] {device.name} | {device.backend_name} | "
+            f"{device.width}x{device.height} @ {device.fps:.1f} FPS"
+        )
+
+
 if __name__ == "__main__":
     try:
-        monitor = EyeFocusMonitor(camera_id=0)
+        args = parse_args()
+        if args.list_cameras:
+            list_cameras(args.scan_limit)
+            sys.exit(0)
+
+        monitor = EyeFocusMonitor(
+            camera_id=args.camera,
+            prefer_camera_name=args.prefer_name,
+            exclude_camera_names=args.exclude_name,
+            camera_scan_limit=args.scan_limit,
+        )
         monitor.run()
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
