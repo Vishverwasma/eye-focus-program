@@ -1,5 +1,22 @@
-opencv-python==4.8.0.76
-mediapipe>=0.10.14,<0.11
-numpy>=1.26,<2
+# Pinned to a coherent, verified set (Python 3.12, AMD64).
+#
+# mediapipe 0.10.14 is pinned exactly: it ships the legacy `solutions.face_mesh`
+# API this app uses. Newer builds (e.g. 0.10.35) dropped `solutions`, which
+# breaks the eye tracker, so do NOT loosen this without re-testing.
+mediapipe==0.10.14
+
+# mediapipe 0.10.14 pulls jax, which requires numpy>=2 - so numpy 2.x is
+# required here, not the old <2 constraint.
+numpy>=2,<3
+
+# Single OpenCV provider. mediapipe requires opencv-contrib-python (a superset
+# of opencv-python); installing BOTH corrupts the shared cv2 module, so we use
+# only contrib here. 4.11 is numpy-2 compatible.
+opencv-contrib-python>=4.11,<5
+
 psutil==5.9.5
-Pillow==10.0.0
+Pillow>=10,<11
+
+# Virtual camera output (the middleware feed apps consume). Also needs a
+# system virtual-camera driver, e.g. the OBS Virtual Camera that ships with OBS.
+pyvirtualcam>=0.15.0

@@ -2,10 +2,12 @@ import cv2
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from camera_source import CameraSourceManager
+from virtual_camera import VirtualCameraPublisher
 from eye_tracker import EyeTracker
 from call_detector import CallRecordingDetector
 from alert_system import AlertSystem
@@ -15,7 +17,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('eye_focus_monitor.log'),
+        logging.FileHandler('eye_focus_monitor.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -33,6 +35,9 @@ class EyeFocusMonitor:
         prefer_camera_name: Optional[str] = None,
         exclude_camera_names: Optional[list] = None,
         camera_scan_limit: int = 10,
+        enable_virtual_camera: bool = True,
+        frame_width: Optional[int] = None,
+        frame_height: Optional[int] = None,
     ):
         """
         Initialize the Eye Focus Monitor
@@ -43,19 +48,27 @@ class EyeFocusMonitor:
             prefer_camera_name: Optional text to prefer in the discovered source.
             exclude_camera_names: Optional source-name fragments to avoid.
             camera_scan_limit: Highest camera index to scan.
+            enable_virtual_camera: Publish processed frames to a virtual camera if available.
         """
         logger.info("Initializing Eye Focus Monitor...")
         
         self.camera_id = camera_id
         self.prefer_camera_name = prefer_camera_name
         self.exclude_camera_names = exclude_camera_names or []
-        self.camera_manager = CameraSourceManager(max_index=camera_scan_limit)
+        self.camera_manager = CameraSourceManager(
+            max_index=camera_scan_limit,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
         self.cap, self.camera_device = self.camera_manager.open_preferred(
             camera_id=camera_id,
             prefer_name=prefer_camera_name,
             exclude_names=self.exclude_camera_names,
         )
         self.camera_id = self.camera_device.index
+        self.enable_virtual_camera = enable_virtual_camera
+        self.virtual_camera = None
+        self._initialize_virtual_camera()
         
         # Initialize components
         self.eye_tracker = EyeTracker(gaze_threshold=0.15)
@@ -66,26 +79,113 @@ class EyeFocusMonitor:
         self.frame_count = 0
         self.alerts_triggered = 0
         self.session_start = datetime.now()
+
+        # Gaze logging state (so we log events, not every frame)
+        self._was_looking_away = False
+        self._last_gaze_direction = None
+        self._look_away_count = 0
         
         logger.info("Eye Focus Monitor initialized successfully")
     
+    def _initialize_virtual_camera(self):
+        """Create a virtual camera publisher when the dependency is available."""
+        if not self.enable_virtual_camera:
+            return
+
+        width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) or self.camera_device.width or 1280
+        height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) or self.camera_device.height or 720
+        fps = int(self.cap.get(cv2.CAP_PROP_FPS) or 0) or int(self.camera_device.fps or 30) or 30
+
+        try:
+            self.virtual_camera = VirtualCameraPublisher(width=width, height=height, fps=fps)
+            logger.info("=" * 60)
+            logger.info("MIDDLEWARE ACTIVE - sharing your processed camera feed")
+            logger.info("In Zoom / Teams / Meet / OBS, pick this camera device:")
+            logger.info("    >>> %s <<<", self.virtual_camera.device)
+            logger.info("Those apps will then receive the PROCESSED feed.")
+            logger.info("=" * 60)
+        except Exception as e:
+            self.virtual_camera = None
+            logger.warning(
+                "Virtual camera output disabled: %s. "
+                "Install a virtual-camera backend (e.g. OBS Virtual Camera) so apps "
+                "can consume the processed feed. The local monitor window still works.",
+                e,
+            )
+
+    def _log_gaze(self, tracking_data):
+        """
+        Console-log gaze events: when the user looks away (and in which
+        direction), when the direction changes, and when they return.
+        Logged on transitions only - not every frame - to avoid flooding.
+        """
+        if not tracking_data.get('face_detected'):
+            return
+
+        looking_at_screen = tracking_data.get('looking_at_screen', True)
+        direction = (tracking_data.get('gaze_direction') or 'center').upper()
+
+        if not looking_at_screen:
+            new_event = not self._was_looking_away
+            changed_direction = direction != self._last_gaze_direction
+            if new_event or changed_direction:
+                if new_event:
+                    self._look_away_count += 1
+                logger.info(
+                    "[GAZE] Looking AWAY -> %s (event #%d)",
+                    direction, self._look_away_count,
+                )
+            self._was_looking_away = True
+            self._last_gaze_direction = direction
+        else:
+            if self._was_looking_away:
+                logger.info("[GAZE] Back ON screen")
+            self._was_looking_away = False
+            self._last_gaze_direction = None
+
+    def _publish_virtual_camera(self, frame):
+        """Send the processed frame to the virtual camera if one is available."""
+        if self.virtual_camera is None:
+            return
+
+        try:
+            self.virtual_camera.publish(frame)
+        except Exception as e:
+            logger.error(f"Virtual camera publish failed: {e}")
+            self.virtual_camera = None
+
     def run(self):
         """Main application loop"""
         logger.info("Starting Eye Focus Monitor - Press 'Q' to quit")
         
         retry_count = 0
-        max_retries = 3
-        
+        max_retries = 10
+
         try:
             while True:
                 ret, frame = self.cap.read()
-                
+
                 if not ret:
                     retry_count += 1
                     if retry_count < max_retries:
                         logger.warning(f"Failed to read frame, retrying... ({retry_count}/{max_retries})")
+                        time.sleep(0.05)  # let the camera deliver the next frame
                         continue  # Retry instead of immediately exiting
-                    logger.warning("Camera read failed after retries; scanning for another source")
+                    logger.warning("Camera read failed after retries; re-opening the same device (shared)")
+                    self.cap.release()
+
+                    # Stay on the SAME physical camera - a hiccup or another app
+                    # briefly touching it should not make us abandon the device
+                    # the user pointed their apps at.
+                    same_cap = self.camera_manager.reopen_same(self.camera_device)
+                    if same_cap is not None:
+                        self.cap = same_cap
+                        retry_count = 0
+                        continue
+
+                    # Only if the device is genuinely gone (unplugged) do we
+                    # fall back to any other usable source.
+                    logger.warning("Same device unavailable; looking for any other usable camera")
                     replacement_cap, replacement_device = self.camera_manager.reopen_after_failure(
                         current_index=self.camera_id,
                         prefer_name=self.prefer_camera_name,
@@ -95,7 +195,6 @@ class EyeFocusMonitor:
                         logger.error("No replacement camera source is available")
                         break
 
-                    self.cap.release()
                     self.cap = replacement_cap
                     self.camera_device = replacement_device
                     self.camera_id = replacement_device.index
@@ -107,7 +206,10 @@ class EyeFocusMonitor:
                 
                 # Get eye tracking data
                 tracking_data = self.eye_tracker.process_frame(frame)
-                
+
+                # Console-log look-away events and direction
+                self._log_gaze(tracking_data)
+
                 # Get call/recording status
                 call_status = self.call_detector.get_status()
                 
@@ -128,6 +230,7 @@ class EyeFocusMonitor:
                 
                 # Draw visualization
                 frame = self._draw_visualization(frame, tracking_data, call_status, alert_data)
+                self._publish_virtual_camera(frame)
                 
                 # Display frame
                 cv2.imshow('Eye Focus Monitor', frame)
@@ -229,7 +332,21 @@ class EyeFocusMonitor:
                 self.eye_tracker.close()
         except Exception as e:
             logger.error(f"Error closing eye tracker: {e}")
+
+        # Stop the background call-detection thread
+        try:
+            if hasattr(self, 'call_detector'):
+                self.call_detector.close()
+        except Exception as e:
+            logger.error(f"Error closing call detector: {e}")
         
+        # Release virtual camera
+        try:
+            if self.virtual_camera is not None:
+                self.virtual_camera.close()
+        except Exception as e:
+            logger.error(f"Error closing virtual camera: {e}")
+
         # Release camera
         self.cap.release()
         cv2.destroyAllWindows()
@@ -282,7 +399,48 @@ def parse_args():
         action="store_true",
         help="List usable OpenCV camera sources and exit.",
     )
+    parser.add_argument(
+        "--check-backend",
+        action="store_true",
+        help="Check whether a virtual-camera backend is installed and exit.",
+    )
+    parser.add_argument(
+        "--no-virtual-camera",
+        dest="virtual_camera",
+        action="store_false",
+        help="Disable publishing processed frames to a virtual camera.",
+    )
+    parser.add_argument(
+        "--resolution",
+        default=None,
+        metavar="WIDTHxHEIGHT",
+        help="Request a capture resolution, e.g. 1280x720. Omit to use the "
+             "camera's native mode (faster startup; forcing a resolution can "
+             "add several seconds on some webcams).",
+    )
+    parser.set_defaults(virtual_camera=True)
     return parser.parse_args()
+
+
+def parse_resolution(value):
+    """Parse 'WIDTHxHEIGHT' into (width, height), or (None, None) if unset."""
+    if not value:
+        return None, None
+    try:
+        w, h = value.lower().split("x")
+        return int(w), int(h)
+    except (ValueError, AttributeError):
+        raise SystemExit(f"Invalid --resolution '{value}'. Use e.g. 1280x720.")
+
+
+def check_backend() -> bool:
+    """Report whether the virtual-camera backend is ready. Returns True if ok."""
+    ok, detail = VirtualCameraPublisher.probe()
+    if ok:
+        print(f"Virtual-camera backend: OK -> apps should select '{detail}'")
+    else:
+        print(f"Virtual-camera backend: NOT READY -> {detail}")
+    return ok
 
 
 def list_cameras(scan_limit: int):
@@ -290,28 +448,50 @@ def list_cameras(scan_limit: int):
     devices = manager.scan()
     if not devices:
         print("No usable camera sources were found.")
-        return
+    else:
+        print("Usable camera sources:")
+        for device in devices:
+            print(
+                f"  [{device.index}] {device.name} | {device.backend_name} | "
+                f"{device.width}x{device.height} @ {device.fps:.1f} FPS"
+            )
 
-    print("Usable camera sources:")
-    for device in devices:
-        print(
-            f"  [{device.index}] {device.name} | {device.backend_name} | "
-            f"{device.width}x{device.height} @ {device.fps:.1f} FPS"
-        )
+    print()
+    check_backend()
 
 
 if __name__ == "__main__":
     try:
         args = parse_args()
+        if args.check_backend:
+            sys.exit(0 if check_backend() else 1)
         if args.list_cameras:
             list_cameras(args.scan_limit)
             sys.exit(0)
 
+        # Pre-flight: the whole point of this app is to publish a processed feed
+        # to a virtual camera. If that's requested but no backend is installed,
+        # refuse to launch with a clear message instead of silently starting in
+        # a local-only mode the user did not ask for.
+        if args.virtual_camera:
+            backend_ok, backend_detail = VirtualCameraPublisher.probe()
+            if not backend_ok:
+                print("Cannot start: virtual-camera backend is not ready.")
+                print(f"  Reason: {backend_detail}")
+                print("  Fix:    install a virtual-camera driver (the OBS Virtual Camera")
+                print("          that ships with OBS Studio is the easiest on Windows),")
+                print("          or re-run with --no-virtual-camera for a local-only window.")
+                sys.exit(2)
+
+        frame_width, frame_height = parse_resolution(args.resolution)
         monitor = EyeFocusMonitor(
             camera_id=args.camera,
             prefer_camera_name=args.prefer_name,
             exclude_camera_names=args.exclude_name,
             camera_scan_limit=args.scan_limit,
+            enable_virtual_camera=args.virtual_camera,
+            frame_width=frame_width,
+            frame_height=frame_height,
         )
         monitor.run()
     except Exception as e:

@@ -1,9 +1,7 @@
 import os
-import wave
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +163,9 @@ class AlertSystem:
         """Log alert to file"""
         try:
             log_file = os.path.join(self.log_dir, f"alerts_{datetime.now().date()}.txt")
-            with open(log_file, 'a') as f:
+            # encoding must be explicit: alert messages contain emojis and the
+            # Windows default (cp1252) cannot encode them, which would raise.
+            with open(log_file, 'a', encoding='utf-8') as f:
                 f.write(
                     f"[{datetime.now().strftime('%H:%M:%S')}] "
                     f"App: {app_name} | "

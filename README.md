@@ -59,6 +59,67 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### How it shares the camera (middleware model)
+
+Eye Focus Monitor is **middleware** that sits between your physical webcam and
+your conferencing/recording software:
+
+```
+Physical webcam ─▶ Eye Focus Monitor (capture → eye tracking → overlay) ─▶ Virtual camera ─▶ Zoom / Teams / Meet / OBS / any app
+```
+
+- This app is the one process that reads the **physical** webcam. It opens it
+  with DirectShow in **shared** mode, so startup succeeds even if another app
+  already has the camera open — it *shares* the device, it never tries to seize
+  exclusive control away from another app.
+- It processes every frame and republishes the result to a **virtual camera**.
+- In Zoom, Teams, Google Meet, OBS, etc., select that virtual camera as your
+  "webcam." Those apps then receive the **processed** feed.
+
+On startup the app prints the exact virtual-camera device name to select, e.g.:
+
+```
+MIDDLEWARE ACTIVE - sharing your processed camera feed
+In Zoom / Teams / Meet / OBS, pick this camera device:
+    >>> OBS Virtual Camera <<<
+```
+
+> Important: for an app to see the *processed* frames it must read from the
+> **virtual** camera. An app pointed straight at the physical webcam still gets
+> the raw feed. Publishing requires `pyvirtualcam` plus a virtual-camera backend
+> (the OBS Virtual Camera driver is the easiest on Windows).
+
+Use `--no-virtual-camera` if you only want the local monitor window.
+
+#### Check your setup before a call
+
+```bash
+python main.py --check-backend      # is a virtual-camera backend installed?
+python main.py --list-cameras       # list webcams AND report backend status
+```
+
+`--check-backend` prints `OK` (with the device name to select) or `NOT READY`
+with the reason, and exits non-zero when not ready — so you catch a missing
+driver before you join a meeting instead of during it.
+
+#### Fast startup & resolution
+
+```bash
+python main.py --camera 0              # skip the scan, open index 0 directly (fastest)
+python main.py --resolution 1280x720  # request HD (adds a few seconds on some webcams)
+```
+
+- Without `--camera`, the app scans for a working source, which takes a few
+  seconds. If you know your index (see `--list-cameras`), pass it to start
+  almost instantly.
+- By default the camera's **native** resolution is used (fast). Forcing a
+  resolution can cost several extra seconds on some drivers, so HD is opt-in
+  via `--resolution`.
+
+> If you get *"No usable camera source could be opened"*, another app is most
+> likely already using the camera. Close it (or start Eye Focus Monitor first
+> and point the other app at the virtual camera).
+
 ### Keyboard Controls
 - **Q** - Quit application
 - **S** - Save screenshot
@@ -152,6 +213,14 @@ python -c "import cv2; print(cv2.CAP_PROP_FRAME_COUNT)"
 - Ensure adequate lighting
 - Position camera to capture full face
 - Adjust `min_detection_confidence` in `eye_tracker.py`
+
+### `module 'mediapipe' has no attribute 'solutions'`
+A too-new mediapipe build (e.g. 0.10.35) dropped the legacy `solutions` API the
+eye tracker uses. Install the pinned version:
+```bash
+pip install "mediapipe==0.10.14"
+```
+Do not loosen the mediapipe pin in `requirements.txt` without re-testing.
 
 ### False alerts
 - Increase `gaze_threshold` value
